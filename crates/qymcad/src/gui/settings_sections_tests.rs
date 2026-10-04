@@ -11,6 +11,49 @@ mod tests {
     use super::super::Settings;
     use crate::i18n;
 
+    #[test]
+    fn resetting_layout_after_moving_the_tree_recovers_the_viewport() {
+        use super::super::{hand::Hand, App};
+        use qymcad_shell::Slot;
+
+        let mut app = App::default();
+        let mut hand = Hand::new(&mut app);
+        assert!(hand.press_word(&i18n::tr("start-close"), egui::pos2(700.0, 600.0)), "the start screen must close by its button");
+        assert!(hand.press_hint(&i18n::tr("tb-new-part-hint")), "a part must be entered through its command before creating the box");
+        assert!(hand.press_hint(&i18n::tr("tb-box-hint")), "the box command must be taken through its button");
+        hand.key(egui::Key::Enter);
+        hand.frame(Vec::new());
+        assert!(!hand.app.project.bodies.is_empty(), "the box must be created through its command before changing the layout");
+        let initial = hand.app.viewing.view_rect;
+        assert!(initial.width() > 700.0 && initial.height() > 600.0, "the initial viewport must be usable: {initial:?}");
+        assert!(hand.press_word(&i18n::tr("menu-windows"), egui::pos2(160.0, 10.0)), "the windows menu must open");
+        assert!(hand.press_word(&i18n::tr("win-settings"), egui::pos2(160.0, 40.0)), "settings must open from the menu");
+        assert!(hand.press_word(&i18n::tr("settings-sec-layout"), egui::pos2(200.0, 300.0)), "the layout section must open");
+        assert!(hand.layout_slot("tree", Slot::Top), "the tree's top slot must be clickable");
+        hand.frame(Vec::new());
+        assert_eq!(crate::gui::shell(&hand.app.set).slot_of("tree"), Some(Slot::Top), "the click must move the tree");
+        assert!(hand.press_word(&i18n::tr("settings-layout-reset"), egui::pos2(600.0, 500.0)), "the normal layout button must be clickable");
+        hand.frame(Vec::new());
+        let restored = hand.app.viewing.view_rect;
+        assert!(hand.app.set.layout.is_empty(), "reset must remove the slot overrides");
+        assert!((restored.width() - initial.width()).abs() < 1.0 && (restored.height() - initial.height()).abs() < 1.0, "reset must recover the viewport: initial {initial:?}, restored {restored:?}");
+
+        assert!(hand.layout_slot("tree", Slot::Bottom), "the tree's bottom slot must be clickable");
+        assert!(hand.scroll_word(&i18n::tr("panel-tree"), egui::vec2(0.0, -300.0)), "the layout section must scroll to its reset button");
+        assert!(hand.press_word(&i18n::tr("settings-reset-section"), egui::pos2(600.0, 600.0)), "the section reset button must be clickable");
+        hand.frame(Vec::new());
+        let restored = hand.app.viewing.view_rect;
+        assert!(
+            (restored.width() - initial.width()).abs() < 1.0 && (restored.height() - initial.height()).abs() < 1.0,
+            "the section reset must recover the viewport: initial {initial:?}, restored {restored:?}"
+        );
+        let image = hand.snapshot();
+        let png = crate::gui::color_image_to_png(&image).expect("the recovered frame must encode");
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/layout-recovery");
+        std::fs::create_dir_all(&directory).expect("the capture directory must be writable");
+        std::fs::write(directory.join("reset.png"), png).expect("the recovered frame must save");
+    }
+
     /// THE SECTIONS AND THEIR ROWS ARE IN THE CATALOGUE IN BOTH LANGUAGES.
     #[test]
     fn every_section_and_row_has_words_in_every_language() {

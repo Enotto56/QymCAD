@@ -108,6 +108,10 @@ pub struct Shell {
     moved: BTreeMap<String, Slot>,
 }
 
+fn panel_id(key: &str, slot: Slot) -> egui::Id {
+    egui::Id::new(key).with(slot.key())
+}
+
 impl Shell {
     /// Register a place. Called by a workbench when it starts, not by the shell.
     pub fn put(&mut self, p: Place) {
@@ -126,6 +130,13 @@ impl Shell {
             return Some(*s);
         }
         self.places.iter().find(|p| p.key == key).map(|p| p.slot)
+    }
+
+    /// The last outer rectangle of a side or bar container in its current slot.
+    /// The centre has no persisted panel rectangle.
+    pub fn panel_rect(&self, key: &str, ctx: &egui::Context) -> Option<egui::Rect> {
+        let slot = self.slot_of(key).filter(|slot| *slot != Slot::Centre)?;
+        egui::PanelState::load(ctx, panel_id(key, slot)).map(|state| state.outer_rect)
     }
 
     /// Move a place. The registration is untouched, so "put it back" stays possible.
@@ -165,11 +176,14 @@ impl Shell {
                     egui::CentralPanel::default().show(ui, |ui| host.fill(key, ui));
                 }
                 _ => {
+                    // Panel memory stores both dimensions. A horizontal panel's full width must not
+                    // become a side panel's remembered width when it moves or returns to its default.
+                    let id = panel_id(key, slot);
                     let mut panel = match slot {
-                        Slot::Menu | Slot::Top => egui::Panel::top(key),
-                        Slot::Bottom => egui::Panel::bottom(key),
-                        Slot::Left => egui::Panel::left(key),
-                        Slot::Right => egui::Panel::right(key),
+                        Slot::Menu | Slot::Top => egui::Panel::top(id),
+                        Slot::Bottom => egui::Panel::bottom(id),
+                        Slot::Left => egui::Panel::left(id),
+                        Slot::Right => egui::Panel::right(id),
                         Slot::Centre => unreachable!("handled above"),
                     };
                     if let Some(w) = p.size {
@@ -187,6 +201,9 @@ impl Shell {
         }
     }
 }
+
+#[cfg(test)]
+mod layout_tests;
 
 #[cfg(test)]
 mod tests {

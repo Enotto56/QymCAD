@@ -718,7 +718,12 @@ impl Session {
     /// `None` when no such panel was drawn.
     pub fn panel(&mut self, id: &str) -> Option<Rect> {
         self.settle();
-        egui::PanelState::load(&self.win.ctx, egui::Id::new(id)).map(|p| p.outer_rect)
+        let shell = super::shell(&self.app.set);
+        if shell.slot_of(id).is_some() {
+            shell.panel_rect(id, &self.win.ctx)
+        } else {
+            egui::PanelState::load(&self.win.ctx, egui::Id::new(id)).map(|state| state.outer_rect)
+        }
     }
 
     /// WHAT THE LAST FRAME PAINTED that a person reads as content: every run of words, and every filled background of
@@ -1524,12 +1529,8 @@ impl Session {
         use qymcad_shell::Fills;
         self.settle();
         let shell = super::shell(&self.app.set);
-        let bars: Vec<Rect> = shell
-            .keys()
-            .into_iter()
-            .filter(|k| shell.slot_of(k) == Some(qymcad_shell::Slot::Top) && *k != "toolbar" && self.app.live(k))
-            .filter_map(|k| egui::containers::panel::PanelState::load(&self.win.ctx, egui::Id::new(k)).map(|s| s.outer_rect))
-            .collect();
+        let bars: Vec<Rect> =
+            shell.keys().into_iter().filter(|k| shell.slot_of(k) == Some(qymcad_shell::Slot::Top) && *k != "toolbar" && self.app.live(k)).filter_map(|k| shell.panel_rect(k, &self.win.ctx)).collect();
         self.win.drawn.iter().filter(|(t, r)| !t.is_empty() && bars.iter().any(|b| b.contains(r.center()))).map(|(t, _)| t.clone()).collect()
     }
 

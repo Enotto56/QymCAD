@@ -197,6 +197,37 @@ impl<'a> Hand<'a> {
         true
     }
 
+    /// Press a slot on the named panel's row in the layout settings.
+    pub fn layout_slot(&mut self, key: &str, slot: qymcad_shell::Slot) -> bool {
+        self.frame(Vec::new());
+        let label = qymcad_i18n::tr(&format!("panel-{key}"));
+        let Some(row) = self.win.drawn.iter().find(|(text, _)| *text == label).map(|(_, rect)| *rect) else { return false };
+        let choice = qymcad_i18n::tr(slot.key());
+        let Some(at) = self.win.drawn.iter().find(|(text, rect)| *text == choice && (row.top()..=row.bottom()).contains(&rect.center().y)).map(|(_, rect)| rect.center()) else { return false };
+        self.press_screen(at);
+        true
+    }
+
+    /// Scroll the area containing the named word by the wheel's point delta.
+    pub fn scroll_word(&mut self, word: &str, delta: egui::Vec2) -> bool {
+        self.frame(Vec::new());
+        let Some(at) = self.win.drawn.iter().find(|(text, _)| text == word).map(|(_, rect)| rect.center()) else { return false };
+        let wheel = egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, phase: egui::TouchPhase::Move, modifiers: Default::default() };
+        self.frame(vec![egui::Event::PointerMoved(at), wheel]);
+        for _ in 0..10 {
+            self.frame(Vec::new());
+        }
+        true
+    }
+
+    /// Capture the last whole frame with its current textures.
+    pub fn snapshot(&self) -> egui::ColorImage {
+        let ppp = self.win.ctx.pixels_per_point();
+        let size = [(self.win.screen.x * ppp).round() as usize, (self.win.screen.y * ppp).round() as usize];
+        let primitives = self.win.ctx.tessellate(self.win.shapes.clone(), ppp);
+        super::help_raster::paint(&primitives, &self.win.textures, size, egui::Color32::BLACK, ppp)
+    }
+
     /// CTRL WITH `key`, pressed and released in whole frames; the window closes after it.
     pub fn ctrl(&mut self, key: egui::Key) -> &mut Self {
         self.chord(egui::Modifiers::COMMAND, key);
