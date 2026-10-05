@@ -3912,6 +3912,7 @@ mod a_shape_is_finished_by_hand;
 mod a_sketch_chamfer_takes_two_values;
 mod a_sketch_fillet_by_chord_or_arc;
 mod a_drag_takes_what_was_pressed;
+mod a_point_on_a_line_does_not_collapse_it;
 mod text_font;
 mod font_row_look;
 mod paths_are_one;

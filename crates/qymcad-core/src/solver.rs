@@ -5,6 +5,9 @@
 //! minimised by Levenberg-Marquardt over an analytic Jacobian.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
+
+use petgraph::unionfind::UnionFind;
 
 use crate::model::{Constraint, Id, SketchPoint};
 
@@ -16,6 +19,60 @@ use crate::model::{Constraint, Id, SketchPoint};
 pub struct RadiusVar {
     pub center: Id,
     pub value: f64,
+}
+
+struct SoftLength {
+    start: usize,
+    end: usize,
+    length: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ReferenceEnds {
+    start: usize,
+    end: usize,
+}
+
+impl ReferenceEnds {
+    fn ordered(self) -> Self {
+        Self { start: self.start.min(self.end), end: self.start.max(self.end) }
+    }
+}
+
+struct ReferenceDrag {
+    coincident: UnionFind<usize>,
+    picked: usize,
+    released: HashSet<ReferenceEnds>,
+}
+
+impl ReferenceDrag {
+    fn releases(&self, ends: ReferenceEnds) -> bool {
+        let groups = ReferenceEnds { start: self.coincident.find(ends.start), end: self.coincident.find(ends.end) };
+        groups.start == self.picked || groups.end == self.picked || self.released.contains(&groups.ordered())
+    }
+}
+
+fn reference_drag(constraints: &[Constraint], idx: &HashMap<Id, usize>, picked: Option<usize>) -> Option<ReferenceDrag> {
+    let picked = picked?;
+    let mut coincident = UnionFind::new(idx.len());
+    for constraint in constraints {
+        if let Constraint::Coincident { a, b } | Constraint::Concentric { c1: a, c2: b } = *constraint {
+            coincident.union(idx[&a], idx[&b]);
+        }
+    }
+    let picked = coincident.find(picked);
+    let released = constraints
+        .iter()
+        .filter_map(|constraint| {
+            let ends = match *constraint {
+                Constraint::Distance { a, b, axis: 0, .. } => ReferenceEnds { start: idx[&a], end: idx[&b] },
+                Constraint::Midpoint { p, a, b } if coincident.find(idx[&p]) == picked => ReferenceEnds { start: idx[&a], end: idx[&b] },
+                _ => return None,
+            };
+            Some(ReferenceEnds { start: coincident.find(ends.start), end: coincident.find(ends.end) }.ordered())
+        })
+        .collect();
+    Some(ReferenceDrag { coincident, picked, released })
 }
 
 /// Solve the constraints over points alone, without radius unknowns — for tests on pure point sets.
@@ -273,9 +330,16 @@ fn solve_lm(points: &mut [SketchPoint], radii: &mut [RadiusVar], constraints: &[
     // reach zero), so the arm rotates instead of stretching. The weight is above the positional regularisation,
     // which is what selects rotation, and far below `Distance` constraints, so explicit lengths still win.
     let w_len = 1e-1_f64;
-    let angle_arms: Vec<(usize, usize, f64)> = if !hold_arms {
-        Vec::new()
-    } else {
+    // A point-on-line reference keeps its free length while another point is dragged. A 93 mm reference shrank to
+    // 3.6e-7 mm under a 2 mm sideways drag: shortening let it tilt while its vertical residual approached
+    // zero. The length tie selects the intact solution. Endpoint and midpoint handles release it; an aligned
+    // length dimension holds it itself. Axis dimensions leave the other coordinate free.
+    let reference_drag = reference_drag(&cons, &idx, drag.map(|gesture| gesture.0));
+    let length = |ends: ReferenceEnds| -> SoftLength {
+        let d = ((x0[2 * ends.start] - x0[2 * ends.end]).powi(2) + (x0[2 * ends.start + 1] - x0[2 * ends.end + 1]).powi(2)).sqrt();
+        SoftLength { start: ends.start, end: ends.end, length: d }
+    };
+    let soft_lengths: Vec<SoftLength> = {
         // arms whose length is already set by a `Distance` dimension are left alone: the dimension holds them
         // and there is nothing to interfere with
         let dimensioned: std::collections::HashSet<(Id, Id)> = cons
@@ -285,18 +349,24 @@ fn solve_lm(points: &mut [SketchPoint], radii: &mut [RadiusVar], constraints: &[
                 _ => None,
             })
             .collect();
-        let arm = |p: Id, q: Id| -> Option<(usize, usize, f64)> {
-            if dimensioned.contains(&if p < q { (p, q) } else { (q, p) }) {
+        let arm = |p: Id, q: Id| -> Option<SoftLength> {
+            if !hold_arms || dimensioned.contains(&if p < q { (p, q) } else { (q, p) }) {
                 return None;
             }
-            let (ip, iq) = (*idx.get(&p)?, *idx.get(&q)?);
-            let d = ((x0[2 * ip] - x0[2 * iq]).powi(2) + (x0[2 * ip + 1] - x0[2 * iq + 1]).powi(2)).sqrt();
-            Some((ip, iq, d))
+            Some(length(ReferenceEnds { start: *idx.get(&p)?, end: *idx.get(&q)? }))
         };
         cons.iter()
             .flat_map(|c| match *c {
                 Constraint::Angle { a, b, c: cc, .. } => vec![arm(b, a), arm(b, cc)],
                 Constraint::AngleLines { a, b, c: cc, d, .. } => vec![arm(a, b), arm(cc, d)],
+                Constraint::PointOnLine { a, b, .. } => {
+                    let ends = ReferenceEnds { start: idx[&a], end: idx[&b] };
+                    if reference_drag.as_ref().is_some_and(|gesture| !gesture.releases(ends)) {
+                        vec![Some(length(ends))]
+                    } else {
+                        Vec::new()
+                    }
+                }
                 _ => Vec::new(),
             })
             .flatten()
@@ -307,7 +377,7 @@ fn solve_lm(points: &mut [SketchPoint], radii: &mut [RadiusVar], constraints: &[
         for k in 0..nv {
             r.push(w_reg * (x[k] - x0[k]));
         }
-        for &(ip, iq, l0) in &angle_arms {
+        for SoftLength { start: ip, end: iq, length: l0 } in &soft_lengths {
             let (dx, dy) = (x[2 * ip] - x[2 * iq], x[2 * ip + 1] - x[2 * iq + 1]);
             r.push(w_len * ((dx * dx + dy * dy).sqrt() - l0));
         }
@@ -382,7 +452,7 @@ fn solve_lm(points: &mut [SketchPoint], radii: &mut [RadiusVar], constraints: &[
                 jrows[base + k].push((k, w_reg)); // regularisation: ∂/∂xk = w_reg
             }
             base += nv;
-            for &(ip, iq, _) in &angle_arms {
+            for SoftLength { start: ip, end: iq, .. } in &soft_lengths {
                 let (dx, dy) = (x[2 * ip] - x[2 * iq], x[2 * ip + 1] - x[2 * iq + 1]);
                 let l = (dx * dx + dy * dy).sqrt().max(1e-12);
                 jrows[base].push((2 * ip, w_len * dx / l));

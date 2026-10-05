@@ -234,6 +234,29 @@ impl<'a> Hand<'a> {
         self.close_window()
     }
 
+    /// Load a project through the existing file-opening facade before driving its editing through frames.
+    pub fn open_project(&mut self, path: &std::path::Path) -> &mut Self {
+        self.app.open_for_test(path.to_string_lossy().into_owned());
+        self
+    }
+
+    /// Double-click the tree row ending with `word`, choosing the row nearest to `near` when names repeat.
+    pub fn double_press_word(&mut self, word: &str, near: egui::Pos2) -> bool {
+        self.frame(Vec::new());
+        let Some(at) = self.win.drawn.iter().filter(|(text, _)| text.ends_with(word)).map(|(_, rect)| rect.center()).min_by(|a, b| a.distance(near).total_cmp(&b.distance(near))) else {
+            return false;
+        };
+        self.win.clock += 1.0;
+        self.frame(vec![egui::Event::PointerMoved(at)]);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                self.frame(vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }]);
+            }
+        }
+        self.close_window();
+        true
+    }
+
     /// `key` WITH `modifiers` held, pressed and released in whole frames.
     pub fn chord(&mut self, modifiers: egui::Modifiers, key: egui::Key) -> &mut Self {
         let event = |pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers };
